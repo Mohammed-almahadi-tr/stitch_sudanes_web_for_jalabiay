@@ -1,5 +1,21 @@
-from fastapi import FastAPI, UploadFile, File, Form
+import sys
+import os
+import shutil
+import tempfile
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 import uvicorn
+
+# Add the tailorvision module to the path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+tool_dir = os.path.join(current_dir, "tailoring-grade_anthropometric_Python_tool")
+if tool_dir not in sys.path:
+    sys.path.append(tool_dir)
+
+try:
+    from tailorvision.pipeline import TailorVisionPipeline
+    from tailorvision.config import PipelineConfig
+except ImportError as e:
+    print(f"Failed to import tailorvision: {e}")
 
 app = FastAPI(title="Heritage Digital AI Measurement Service")
 
@@ -10,24 +26,44 @@ async def analyze_measurements(
     height_cm: float = Form(175.0)
 ):
     """
-    Mock AI measurement endpoint.
-    In a real implementation, this would process the images with an ML model
-    to extract bodily measurements.
+    AI measurement endpoint utilizing the TailorVision pipeline.
     """
     print(f"Received request for analysis with height: {height_cm}cm")
-    
-    # Mock calculation based on height
-    return {
-        "success": True,
-        "measurements": {
-            "chest_cm": round(height_cm * 0.52, 2),
-            "waist_cm": round(height_cm * 0.43, 2),
-            "hips_cm": round(height_cm * 0.54, 2),
-            "shoulder_cm": round(height_cm * 0.24, 2),
-            "height_cm": height_cm
-        },
-        "message": "AI analysis completed (MOCK)"
-    }
+
+    if not front_image or not side_image:
+        raise HTTPException(status_code=400, detail="Both front and side images are required")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        front_path = os.path.join(temp_dir, "front.jpg")
+        side_path = os.path.join(temp_dir, "side.jpg")
+
+        with open(front_path, "wb") as f:
+            shutil.copyfileobj(front_image.file, f)
+        
+        with open(side_path, "wb") as f:
+            shutil.copyfileobj(side_image.file, f)
+
+        try:
+            config = PipelineConfig(
+                known_height_cm=height_cm,
+                gender="male",  # Could be parameterized later if needed
+                garment_type="traditional",
+            )
+            pipeline = TailorVisionPipeline(config)
+            result = pipeline.run(front_path, side_path)
+            
+            return {
+                "success": True,
+                "measurements": result.measurements_cm,
+                "confidence": result.measurement_confidence,
+                "uncertainty_cm": result.uncertainty_cm,
+                "tailoring_recommendations": result.tailoring_recommendations,
+                "message": "AI analysis completed successfully"
+            }
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 def health_check():
